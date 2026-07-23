@@ -1,7 +1,11 @@
 #include "raster.h"
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define SIGN(x) ( ( (x) > 0 ) - ( (x) < 0 ) )
+
+#define MIN(a, b) ( (a) < (b) ? (a) : (b) )
+#define MAX(a, b) ( (a) > (b) ? (a) : (b) )
 
 void raster_line(
 		int x0, int y0,
@@ -55,6 +59,48 @@ void raster_line(
 
 		e += 2 * minor_delta;
 		(*major_coord) += major_step;
+	}
+}
+
+int signed_double_area(
+		int x0, int y0,
+		int x1, int y1,
+		int x2, int y2
+		)
+{
+	return ( x0 - x2 ) * ( y1 - y2 ) - ( x1 - x2 ) * ( y0 - y2 );
+}
+
+void raster_triangle(
+		int x0, int y0,
+		int x1, int y1,
+		int x2, int y2,
+		void *ctx,
+		void (*cb)(void *ctx, int x, int y, int u0, int u1, int u2, int det)
+		)
+{
+	int min_x = MIN(MIN(x0, x1), x2);
+	int min_y = MIN(MIN(y0, y1), y2);
+	int max_x = MAX(MAX(x0, x1), x2);
+	int max_y = MAX(MAX(y0, y1), y2);
+
+	int det = signed_double_area(x0, y0, x1, y1, x2, y2);
+
+	for (int y = min_y; y <= max_y; y++) {
+		for (int x = min_x; x <= max_x; x++) {
+			int u0 = signed_double_area(x, y, x1, y1, x2, y2);
+			int u1 = signed_double_area(x, y, x2, y2, x0, y0);
+			int u2 = signed_double_area(x, y, x0, y0, x1, y1);
+
+			bool in =
+				( SIGN(u0) == SIGN(det) || u0 == 0 ) &&
+				( SIGN(u1) == SIGN(det) || u1 == 0 ) &&
+				( SIGN(u2) == SIGN(det) || u2 == 0 );
+
+			if (in) {
+				cb(ctx, x, y, u0, u1, u2, det);
+			}
+		}
 	}
 }
 
