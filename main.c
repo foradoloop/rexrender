@@ -2,6 +2,11 @@
 #include "raster.h"
 #include "ppm.h"
 #include <stdlib.h>
+#include <float.h>
+
+// Use -D instead
+//#define TOBJ_ENABLE_FILE_IO
+#include "tiny_obj_c.h"
 
 const int WIDTH = 1280;
 const int HEIGHT = 720;
@@ -22,46 +27,24 @@ uint32_t make_rgbx(unsigned char r, unsigned char g, unsigned char b)
 
 unsigned char get_red_ch(uint32_t color)
 {
-	return (color & RED_CH_MASK) >> RED_CH_SHIFT;
+	return ( color & RED_CH_MASK ) >> RED_CH_SHIFT;
 }
 
 unsigned char get_green_ch(uint32_t color)
 {
-	return (color & GREEN_CH_MASK) >> GREEN_CH_SHIFT;
+	return ( color & GREEN_CH_MASK ) >> GREEN_CH_SHIFT;
 }
 
 unsigned char get_blue_ch(uint32_t color)
 {
-	return (color & BLUE_CH_MASK) >> BLUE_CH_SHIFT;
+	return ( color & BLUE_CH_MASK ) >> BLUE_CH_SHIFT;
 }
 
-void cb(void *ctx, int x, int y, int u0, int u1, int u2, int det)
+void cb(void *ctx, int x, int y)
 {
 	uintptr_t *ptr = (uintptr_t *)ctx;
 	Canvas *canvas = (Canvas *)ptr[0];
-	uint32_t *gradient = (uint32_t *)ptr[1];
-
-	float alpha = (float)u0 / (float)det;
-	float beta = (float)u1 / (float)det;
-	float gamma = (float)u2 / (float)det;
-
-	unsigned char r0 = get_red_ch(gradient[0]);
-	unsigned char r1 = get_red_ch(gradient[1]);
-	unsigned char r2 = get_red_ch(gradient[2]);
-
-	unsigned char g0 = get_green_ch(gradient[0]);
-	unsigned char g1 = get_green_ch(gradient[1]);
-	unsigned char g2 = get_green_ch(gradient[2]);
-
-	unsigned char b0 = get_blue_ch(gradient[0]);
-	unsigned char b1 = get_blue_ch(gradient[1]);
-	unsigned char b2 = get_blue_ch(gradient[2]);
-
-	unsigned char r = alpha * r0 + beta * r1 + gamma * r2;
-	unsigned char g = alpha * g0 + beta * g1 + gamma * g2;
-	unsigned char b = alpha * b0 + beta * b1 + gamma * b2;
-
-	uint32_t color = make_rgbx(r, g, b);
+	uint32_t color = *(uint32_t *)ptr[1];
 
 	canvas_set_pixel(canvas, x, y, color);
 }
@@ -76,38 +59,109 @@ void fetcher(void *ctx, int x, int y, unsigned char *r, unsigned char *g, unsign
 	*b = get_blue_ch(color);
 }
 
-int main(void)
+void tobj_get_vertices(tobj_scene_f *scene, tobj_index idx, float *x, float *y, float *z)
+{
+	*x = scene->attrib.vertices.ptr[3 * idx.vertex_index + 0];
+	*y = scene->attrib.vertices.ptr[3 * idx.vertex_index + 1];
+	*z = scene->attrib.vertices.ptr[3 * idx.vertex_index + 2];
+}
+
+float norm(float x, float min_x, float max_x)
+{
+	return (x - min_x) / (max_x - min_x);
+}
+
+float min_x = FLT_MAX;
+float min_y = FLT_MAX;
+float max_x = -FLT_MAX;
+float max_y = -FLT_MAX;
+
+// Orthogonal
+void projection(float *sx, float *sy, float x, float y)
+{
+	*sx = norm(x, min_x, max_x) * WIDTH;
+	*sy = HEIGHT * (1 - norm(y, min_y, max_y));
+}
+
+int main(int argc, char **argv)
 {
 	Canvas canvas;
 	uint32_t *pixels = malloc(sizeof(uint32_t) * WIDTH * HEIGHT);
 
+	char *obj_path = argv[1];
+
 	canvas_init(&canvas, pixels, WIDTH, HEIGHT);
+
+	canvas_fill(&canvas, make_rgbx(0, 0, 0));
 
 	srand((unsigned int)(uintptr_t)(main));
 
-	int x0, y0;
-	int x1, y1;
-	int x2, y2;
+	tobj_scene_f scene;
+	tobj_load_config cfg = tobj_default_config();
+	tobj_diag diag = {0};
 
-	uint32_t gradient[3];
+	tobj_load_obj_from_file_f(&scene, obj_path, &cfg, &diag);
 
-	x0 = 0.50f * WIDTH; y0 = 0.25f * HEIGHT;
-	x1 = 0.25f * WIDTH; y1 = 0.75f * HEIGHT;
-	x2 = 0.75f * WIDTH; y2 = 0.75f * HEIGHT;
+	for (size_t s = 0; s < scene.num_shapes; s++) {
+		const tobj_mesh_f *mesh = &scene.shapes[s].mesh;
+		for (size_t i = 0; i < mesh->num_indices; i++) {
+			float x, y, z;
 
-	gradient[0] = make_rgbx(255, 0, 0);
-	gradient[1] = make_rgbx(0, 255, 0);
-	gradient[2] = make_rgbx(0, 0, 255);
+			tobj_get_vertices(&scene, mesh->indices[i], &x, &y, &z);
 
-	uintptr_t ptr[2] = { (uintptr_t)&canvas, (uintptr_t)&gradient };
+			if (x < min_x) min_x = x;
+			if (y < min_y) min_y = y;
+			if (x > max_x) max_x = x;
+			if (y > max_y) max_y = y;
+		}
+	}
 
-	raster_triangle(
-		x0, y0,
-		x1, y1,
-		x2, y2,
-		(void *)&ptr,
-		cb
-		);
+	for (size_t s = 0; s < scene.num_shapes; s++) {
+		const tobj_mesh_f *mesh = &scene.shapes[s].mesh;
+		for (size_t i = 0; i < mesh->num_indices; i += 3) {
+			float x0, y0, z0;
+			float x1, y1, z1;
+			float x2, y2, z2;
+
+			tobj_get_vertices(&scene, mesh->indices[i + 0], &x0, &y0, &z0);
+			tobj_get_vertices(&scene, mesh->indices[i + 1], &x1, &y1, &z1);
+			tobj_get_vertices(&scene, mesh->indices[i + 2], &x2, &y2, &z2);
+
+			float sx0, sy0;
+			float sx1, sy1;
+			float sx2, sy2;
+			
+			projection(&sx0, &sy0, x0, y0);
+			projection(&sx1, &sy1, x1, y1);
+			projection(&sx2, &sy2, x2, y2);
+
+			float s[6] = { sx0, sy0, sx1, sy1, sx2, sy2 };
+
+			unsigned r, g, b;
+
+			r = rand() % 256;
+			g = rand() % 256;
+			b = rand() % 256;
+
+			uint32_t color = make_rgbx(r, g, b);
+	
+			uintptr_t ptr[2] = { (uintptr_t)&canvas, (uintptr_t)&color};
+
+			for (int l = 0; l < 3; l++) {
+				// Draw wireframe triangle
+				raster_line(
+					s[2 * l], s[2 * l + 1],
+					s[(2 * (l + 1)) % 6], s[(2 * (l + 1) + 1) % 6],
+					(void *)&ptr,
+					cb
+					);
+			}
+
+		}
+	}
+
+	tobj_scene_free_f(&scene);
+	tobj_diag_free(&diag, NULL);
 
 	FILE *output = fopen("output.ppm", "wb");
 
