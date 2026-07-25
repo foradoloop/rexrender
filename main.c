@@ -1,12 +1,86 @@
 #include "canvas.h"
 #include "raster.h"
-#include "ppm.h"
-#include <stdlib.h>
-#include <float.h>
+#include <math.h>
+#include <SDL2/SDL.h>
 
-// Use -D instead
-//#define TOBJ_ENABLE_FILE_IO
-#include "tiny_obj_c.h"
+typedef struct vec3f {
+	float x, y, z;
+} Vec3f;
+
+Vec3f make_vec3f(float x, float y, float z)
+{
+	Vec3f ret = { x, y , z};
+
+	return ret;
+}
+
+Vec3f vec3f_translate(Vec3f vec, Vec3f delta)
+{
+	Vec3f ret = {
+		vec.x + delta.x,
+		vec.y + delta.y,
+		vec.z + delta.z
+	};
+
+	return ret;
+}
+
+Vec3f vec3f_rotate_by_y_axis(Vec3f vec, float angle)
+{
+	float x = vec.x;
+	float y = vec.y;
+	float z = vec.z;
+	float c = cosf(angle);
+	float s = sinf(angle);
+
+	Vec3f ret = {
+		x * c + z * s,
+		y,
+		x * (-s) + z * c
+	};
+
+	return ret;
+}
+
+Vec3f vec3f_mul_scalar(Vec3f vec, float scalar)
+{
+	Vec3f ret = {
+		vec.x * scalar,
+		vec.y * scalar,
+		vec.z * scalar
+	};
+
+	return ret;
+}
+
+Vec3f vec3f_div_scalar(Vec3f vec, float scalar)
+{
+	return vec3f_mul_scalar(vec, 1.0f / scalar);
+}
+
+const Vec3f cube[] = {
+	{ 0.5f, 0.5f, 0.5f },
+	{ -0.5f, 0.5f, 0.5f },
+	{ -0.5f, -0.5f, 0.5f },
+	{ 0.5f, -0.5f, 0.5f },
+
+	{ 0.5f, 0.5f, -0.5f },
+	{ -0.5f, 0.5f, -0.5f },
+	{ -0.5f, -0.5f, -0.5f },
+	{ 0.5f, -0.5f, -0.5f },
+};
+
+const int lines_indices[][3] = {
+	{ 1, 3, 4 },
+	{ 0, 2, 5 },
+	{ 1, 3, 6 },
+	{ 2, 0, 7 },
+
+	{ 5, 7, 0 },
+	{ 4, 6, 1 },
+	{ 5, 7, 2 },
+	{ 6, 4, 3 }
+};
 
 const int WIDTH = 1280;
 const int HEIGHT = 720;
@@ -46,129 +120,142 @@ void cb(void *ctx, int x, int y)
 	Canvas *canvas = (Canvas *)ptr[0];
 	uint32_t color = *(uint32_t *)ptr[1];
 
-	canvas_set_pixel(canvas, x, y, color);
+
+	if (canvas_in_bounds(canvas, x, y)) {
+		canvas_set_pixel(canvas, x, y, color);
+	}
 }
 
-void fetcher(void *ctx, int x, int y, unsigned char *r, unsigned char *g, unsigned char *b)
+Vec3f projection(Vec3f vec)
 {
-	Canvas *canvas = (Canvas *)ctx;
-	uint32_t color = canvas_get_pixel(canvas, x, y);
-
-	*r = get_red_ch(color);
-	*g = get_green_ch(color);
-	*b = get_blue_ch(color);
+	return vec3f_div_scalar(vec, vec.z);
 }
 
-void tobj_get_vertices(tobj_scene_f *scene, tobj_index idx, float *x, float *y, float *z)
+float norm(float val, float min_val, float max_val)
 {
-	*x = scene->attrib.vertices.ptr[3 * idx.vertex_index + 0];
-	*y = scene->attrib.vertices.ptr[3 * idx.vertex_index + 1];
-	*z = scene->attrib.vertices.ptr[3 * idx.vertex_index + 2];
+	return (val - min_val) / (max_val - min_val);
 }
 
-float norm(float x, float min_x, float max_x)
+Vec3f viewport(Vec3f vec)
 {
-	return (x - min_x) / (max_x - min_x);
+	Vec3f ret = {
+		.x = norm(vec.x, -1.0f, 1.0f),
+		.y = norm(vec.y, -1.0f, 1.0f)
+	};
+
+	ret.x *= WIDTH;
+	ret.y = (1 - ret.y) * HEIGHT;
+
+	return ret;
 }
 
-float min_x = FLT_MAX;
-float min_y = FLT_MAX;
-float max_x = -FLT_MAX;
-float max_y = -FLT_MAX;
-
-// Orthogonal
-void projection(float *sx, float *sy, float x, float y)
+uint32_t rand_color()
 {
-	*sx = norm(x, min_x, max_x) * WIDTH;
-	*sy = HEIGHT * (1 - norm(y, min_y, max_y));
+	unsigned char r, g, b;
+
+	r = rand() % 256;
+	g = rand() % 256;
+	b = rand() % 256;
+
+	return make_rgbx(r, g, b);
 }
+
+const char *TITLE = "Cube";
+const float FPS = 60.0f;
 
 int main(int argc, char **argv)
 {
+	SDL_Window *window;
+	SDL_Surface *window_surface;
+	SDL_Surface *surface;
+
 	Canvas canvas;
-	uint32_t *pixels = malloc(sizeof(uint32_t) * WIDTH * HEIGHT);
 
-	char *obj_path = argv[1];
+	SDL_Init( SDL_INIT_VIDEO );
 
-	canvas_init(&canvas, pixels, WIDTH, HEIGHT);
+	window = SDL_CreateWindow(
+			TITLE,
+			SDL_WINDOWPOS_UNDEFINED,
+		       	SDL_WINDOWPOS_UNDEFINED,
+		       	WIDTH,
+		       	HEIGHT,
+		       	SDL_WINDOW_SHOWN
+		       	);
+
+	window_surface = SDL_GetWindowSurface(window);
+
+	surface = SDL_CreateRGBSurfaceWithFormat(
+			0,
+			WIDTH,
+			HEIGHT,
+			32,
+			SDL_PIXELFORMAT_RGBX8888
+			);
+
+	canvas_init(&canvas, (uint32_t *)surface->pixels, WIDTH, HEIGHT);
 
 	canvas_fill(&canvas, make_rgbx(0, 0, 0));
 
-	srand((unsigned int)(uintptr_t)(main));
+	srand((unsigned int)(uintptr_t)main);
 
-	tobj_scene_f scene;
-	tobj_load_config cfg = tobj_default_config();
-	tobj_diag diag = {0};
+	bool running = true;	
+	SDL_Event e;
+	Uint32 last_tick = 0;
+	float angle = 0;
 
-	tobj_load_obj_from_file_f(&scene, obj_path, &cfg, &diag);
+	uint32_t color = rand_color();
 
-	for (size_t s = 0; s < scene.num_shapes; s++) {
-		const tobj_mesh_f *mesh = &scene.shapes[s].mesh;
-		for (size_t i = 0; i < mesh->num_indices; i++) {
-			float x, y, z;
-
-			tobj_get_vertices(&scene, mesh->indices[i], &x, &y, &z);
-
-			if (x < min_x) min_x = x;
-			if (y < min_y) min_y = y;
-			if (x > max_x) max_x = x;
-			if (y > max_y) max_y = y;
+	while (running) {
+		while (SDL_PollEvent(&e)) {
+			if (e.type == SDL_QUIT) {
+				running = false;
+				break;
+			}
 		}
-	}
 
-	for (size_t s = 0; s < scene.num_shapes; s++) {
-		const tobj_mesh_f *mesh = &scene.shapes[s].mesh;
-		for (size_t i = 0; i < mesh->num_indices; i += 3) {
-			float x0, y0, z0;
-			float x1, y1, z1;
-			float x2, y2, z2;
+		if (SDL_GetTicks() - last_tick < (1.0f / FPS * 1000)) {
+			continue;
+		}
 
-			tobj_get_vertices(&scene, mesh->indices[i + 0], &x0, &y0, &z0);
-			tobj_get_vertices(&scene, mesh->indices[i + 1], &x1, &y1, &z1);
-			tobj_get_vertices(&scene, mesh->indices[i + 2], &x2, &y2, &z2);
+		last_tick = SDL_GetTicks();
 
-			float sx0, sy0;
-			float sx1, sy1;
-			float sx2, sy2;
-			
-			projection(&sx0, &sy0, x0, y0);
-			projection(&sx1, &sy1, x1, y1);
-			projection(&sx2, &sy2, x2, y2);
+		Vec3f world[8];
 
-			float s[6] = { sx0, sy0, sx1, sy1, sx2, sy2 };
+		for (int i = 0; i < 8; i++) {
+			// Putting the cube a little away to fit in [-1, 1] and avoid division by 0
+			world[i] = vec3f_rotate_by_y_axis(cube[i], angle);
+			world[i] = vec3f_translate(world[i], make_vec3f(0, 0, 2));
+			world[i] = projection(world[i]);
+			world[i] = viewport(world[i]);
+		}
 
-			unsigned r, g, b;
-
-			r = rand() % 256;
-			g = rand() % 256;
-			b = rand() % 256;
-
-			uint32_t color = make_rgbx(r, g, b);
-	
+		for (int p = 0; p < 8; p++) {
 			uintptr_t ptr[2] = { (uintptr_t)&canvas, (uintptr_t)&color};
 
 			for (int l = 0; l < 3; l++) {
-				// Draw wireframe triangle
+				Vec3f v = world[lines_indices[p][l]];
+
 				raster_line(
-					s[2 * l], s[2 * l + 1],
-					s[(2 * (l + 1)) % 6], s[(2 * (l + 1) + 1) % 6],
+					world[p].x, world[p].y,
+					v.x, v.y,
 					(void *)&ptr,
 					cb
 					);
 			}
-
 		}
+
+		// One full rotation around y axis each 5 seconds
+		angle += 2 * M_PI / FPS / 5.0f;
+
+		SDL_BlitSurface(surface, 0, window_surface, 0);
+		SDL_UpdateWindowSurface(window);
+
+		canvas_fill(&canvas, make_rgbx(0, 0, 0));
 	}
 
-	tobj_scene_free_f(&scene);
-	tobj_diag_free(&diag, NULL);
-
-	FILE *output = fopen("output.ppm", "wb");
-
-	ppm_write(output, WIDTH, HEIGHT, (void *)&canvas, fetcher);
-
-	free(pixels);
-	fclose(output);
+	SDL_FreeSurface(surface);
+	SDL_DestroyWindow(window);
+	SDL_Quit();
 
 	return 0;
 }
