@@ -1,85 +1,31 @@
 #include "canvas.h"
 #include "raster.h"
-#include <math.h>
+#include "vec.h"
+#include "mat.h"
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdbool.h>
 #include <SDL2/SDL.h>
 
-typedef struct vec3f {
-	float x, y, z;
-} Vec3f;
-
-Vec3f make_vec3f(float x, float y, float z)
-{
-	Vec3f ret = { x, y , z};
-
-	return ret;
-}
-
-Vec3f vec3f_translate(Vec3f vec, Vec3f delta)
-{
-	Vec3f ret = {
-		vec.x + delta.x,
-		vec.y + delta.y,
-		vec.z + delta.z
-	};
-
-	return ret;
-}
-
-Vec3f vec3f_rotate_by_y_axis(Vec3f vec, float angle)
-{
-	float x = vec.x;
-	float y = vec.y;
-	float z = vec.z;
-	float c = cosf(angle);
-	float s = sinf(angle);
-
-	Vec3f ret = {
-		x * c + z * s,
-		y,
-		x * (-s) + z * c
-	};
-
-	return ret;
-}
-
-Vec3f vec3f_mul_scalar(Vec3f vec, float scalar)
-{
-	Vec3f ret = {
-		vec.x * scalar,
-		vec.y * scalar,
-		vec.z * scalar
-	};
-
-	return ret;
-}
-
-Vec3f vec3f_div_scalar(Vec3f vec, float scalar)
-{
-	return vec3f_mul_scalar(vec, 1.0f / scalar);
-}
-
-const Vec3f cube[] = {
+const Vec3 cube_vertices[] = {
 	{ 0.5f, 0.5f, 0.5f },
 	{ -0.5f, 0.5f, 0.5f },
 	{ -0.5f, -0.5f, 0.5f },
 	{ 0.5f, -0.5f, 0.5f },
-
 	{ 0.5f, 0.5f, -0.5f },
 	{ -0.5f, 0.5f, -0.5f },
 	{ -0.5f, -0.5f, -0.5f },
 	{ 0.5f, -0.5f, -0.5f },
 };
 
-const int lines_indices[][3] = {
-	{ 1, 3, 4 },
-	{ 0, 2, 5 },
-	{ 1, 3, 6 },
-	{ 2, 0, 7 },
-
-	{ 5, 7, 0 },
-	{ 4, 6, 1 },
-	{ 5, 7, 2 },
-	{ 6, 4, 3 }
+const int cube_edges[][2] = {
+	{ 0, 1 }, { 0, 3 }, { 0, 4 },
+	{ 1, 2 }, { 1, 5 },
+	{ 2, 3 }, { 2, 6 },
+	{ 3, 7 },
+	{ 4, 5 }, { 4, 7 },
+	{ 5, 6 },
+	{ 6, 7 }
 };
 
 const int WIDTH = 1280;
@@ -120,15 +66,9 @@ void cb(void *ctx, int x, int y)
 	Canvas *canvas = (Canvas *)ptr[0];
 	uint32_t color = *(uint32_t *)ptr[1];
 
-
 	if (canvas_in_bounds(canvas, x, y)) {
 		canvas_set_pixel(canvas, x, y, color);
 	}
-}
-
-Vec3f projection(Vec3f vec)
-{
-	return vec3f_div_scalar(vec, vec.z);
 }
 
 float norm(float val, float min_val, float max_val)
@@ -136,15 +76,44 @@ float norm(float val, float min_val, float max_val)
 	return (val - min_val) / (max_val - min_val);
 }
 
-Vec3f viewport(Vec3f vec)
+Vec4 projection(Vec4 vec)
 {
-	Vec3f ret = {
+	float z = vec.z; 
+	Vec4 ret = { vec.x / z, vec.y / z, vec.z / z, vec.w / z };
+
+	return ret;
+}
+
+Vec4 viewport(Vec4 vec)
+{
+	Vec4 ret = {
 		.x = norm(vec.x, -1.0f, 1.0f),
-		.y = norm(vec.y, -1.0f, 1.0f)
+		.y = norm(vec.y, -1.0f, 1.0f),
+		.z = vec.z,
+		.w = vec.w
 	};
 
 	ret.x *= WIDTH;
-	ret.y = (1 - ret.y) * HEIGHT;
+	ret.y = (1.0f - ret.y) * HEIGHT;
+
+	return ret;
+}
+
+Vec4 vec3_to_vec4(Vec3 v, float w)
+{
+	Vec4 vec = { v.x, v.y, v.z, w };
+
+	return vec;
+}
+
+Vec4 mat4_mul_vec4(Mat4 m, Vec4 v)
+{
+	Vec4 ret = {
+		.x = m.m[0][0] * v.x + m.m[0][1] * v.y + m.m[0][2] * v.z + m.m[0][3] * v.w,
+		.y = m.m[1][0] * v.x + m.m[1][1] * v.y + m.m[1][2] * v.z + m.m[1][3] * v.w,
+		.z = m.m[2][0] * v.x + m.m[2][1] * v.y + m.m[2][2] * v.z + m.m[2][3] * v.w,
+		.w = m.m[3][0] * v.x + m.m[3][1] * v.y + m.m[3][2] * v.z + m.m[3][3] * v.w
+	};
 
 	return ret;
 }
@@ -163,6 +132,10 @@ uint32_t rand_color()
 const char *TITLE = "Cube";
 const float FPS = 60.0f;
 
+const float pi = 3.141593f;
+
+#define ARRAY_SIZE(ptr) ( sizeof(ptr) / sizeof(*ptr) )
+
 int main(int argc, char **argv)
 {
 	SDL_Window *window;
@@ -171,16 +144,16 @@ int main(int argc, char **argv)
 
 	Canvas canvas;
 
-	SDL_Init( SDL_INIT_VIDEO );
+	SDL_Init(SDL_INIT_VIDEO);
 
 	window = SDL_CreateWindow(
 			TITLE,
 			SDL_WINDOWPOS_UNDEFINED,
-		       	SDL_WINDOWPOS_UNDEFINED,
-		       	WIDTH,
-		       	HEIGHT,
-		       	SDL_WINDOW_SHOWN
-		       	);
+			SDL_WINDOWPOS_UNDEFINED,
+			WIDTH,
+			HEIGHT,
+			SDL_WINDOW_SHOWN
+			);
 
 	window_surface = SDL_GetWindowSurface(window);
 
@@ -201,9 +174,12 @@ int main(int argc, char **argv)
 	bool running = true;	
 	SDL_Event e;
 	Uint32 last_tick = 0;
-	float angle = 0;
+	float angle = 0.0f;
 
 	uint32_t color = rand_color();
+
+	size_t num_vertices = ARRAY_SIZE(cube_vertices);
+	size_t num_edges = ARRAY_SIZE(cube_edges);
 
 	while (running) {
 		while (SDL_PollEvent(&e)) {
@@ -213,39 +189,40 @@ int main(int argc, char **argv)
 			}
 		}
 
-		if (SDL_GetTicks() - last_tick < (1.0f / FPS * 1000)) {
+		if (SDL_GetTicks() - last_tick < (1.0f / FPS * 1000.0f)) {
 			continue;
 		}
 
 		last_tick = SDL_GetTicks();
 
-		Vec3f world[8];
+		Vec4 world[num_vertices];
 
-		for (int i = 0; i < 8; i++) {
-			// Putting the cube a little away to fit in [-1, 1] and avoid division by 0
-			world[i] = vec3f_rotate_by_y_axis(cube[i], angle);
-			world[i] = vec3f_translate(world[i], make_vec3f(0, 0, 2));
-			world[i] = projection(world[i]);
-			world[i] = viewport(world[i]);
+		// Putting the cube a little away to fit in [-1, 1] and avoid division by 0
+		Mat4 model = mat4_mul(mat4_translate(0.0f, 0.0f, 2.0f), mat4_rotate_y(angle));
+
+		for (int v = 0; v < num_vertices; v++) {
+			world[v] = mat4_mul_vec4(model, vec3_to_vec4(cube_vertices[v], 1.0f));
+			world[v] = projection(world[v]);
+			world[v] = viewport(world[v]);
 		}
 
-		for (int p = 0; p < 8; p++) {
-			uintptr_t ptr[2] = { (uintptr_t)&canvas, (uintptr_t)&color};
+		for (int e = 0; e < num_edges; e++) { 
+			const int *edge = cube_edges[e];
+			uintptr_t ptr[2] = { (uintptr_t)&canvas, (uintptr_t)&color };
 
-			for (int l = 0; l < 3; l++) {
-				Vec3f v = world[lines_indices[p][l]];
+			Vec4 v0 = world[edge[0]];
+			Vec4 v1 = world[edge[1]];
 
-				raster_line(
-					world[p].x, world[p].y,
-					v.x, v.y,
-					(void *)&ptr,
-					cb
-					);
-			}
+			raster_line(
+				v0.x, v0.y,
+				v1.x, v1.y,
+				(void *)&ptr,
+				cb
+				);
 		}
 
 		// One full rotation around y axis each 5 seconds
-		angle += 2 * M_PI / FPS / 5.0f;
+		angle += 2 * pi / FPS / 5.0f;
 
 		SDL_BlitSurface(surface, 0, window_surface, 0);
 		SDL_UpdateWindowSurface(window);
